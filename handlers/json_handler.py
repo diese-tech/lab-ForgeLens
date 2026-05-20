@@ -50,7 +50,7 @@ async def _process_attachment(
             await _admin(message, f"Ignored `{attachment.filename}` because producer is not `GodForge`.")
         return
 
-    draft_id = data.get("draft_id") or extract_uid(filenames=[attachment.filename])
+    draft_id = data.get("match_id") or data.get("draft_id") or extract_uid(filenames=[attachment.filename])
     if not draft_id:
         await _admin(message, f"Could not determine a draft_id from `{attachment.filename}`.")
         return
@@ -70,38 +70,46 @@ async def _process_attachment(
     submitted_at = message.created_at.replace(tzinfo=timezone.utc).isoformat()
     games = data.get("games") or [data]
     if sheet_id and not sheets_service.evidence_exists(sheet_id, guild_id, draft_id, fingerprint):
-        await asyncio.to_thread(sheets_service.append_evidence, sheet_id, {
-            "guild_id": str(guild_id),
-            "match_id": draft_id,
-            "evidence_fingerprint": fingerprint,
-            "evidence_type": "draft_json",
-            "message_id": str(message.id),
-            "filename": attachment.filename,
-            "uploaded_at": submitted_at,
-            "parsed_player_names": "",
-            "status": "evidence_uploaded",
-            "notes": "GodForge draft enrichment only; settlement still requires official ForgeLens result",
-        })
-        for i, game in enumerate(games, start=1):
-            await asyncio.to_thread(sheets_service.append_match_log, sheet_id, {
-                "draft_id": draft_id,
+        await asyncio.to_thread(
+            sheets_service.append_evidence,
+            sheet_id,
+            {
                 "guild_id": str(guild_id),
-                "game_number": game.get("game_number", i),
-                "submitted_at": submitted_at,
-                "blue_captain": (data.get("blue_captain") or {}).get("name", ""),
-                "red_captain": (data.get("red_captain") or {}).get("name", ""),
-                "blue_picks":    _join(game.get("picks", {}).get("blue", [])),
-                "red_picks":     _join(game.get("picks", {}).get("red",  [])),
-                "blue_bans":     _join(game.get("bans",  {}).get("blue", [])),
-                "red_bans":      _join(game.get("bans",  {}).get("red",  [])),
-                "fearless_pool": _join(data.get("fearless_pool", [])),
-                "game_status": game.get("status", game.get("game_status", "Unknown")),
-                "match_status": "evidence_uploaded",
-                "evidence_fingerprints": fingerprint,
-                "review_notes": "GodForge draft enrichment; stats and results remain ForgeLens-owned",
-                "winner": "TBD",
-                "series_score": "TBD",
-            })
+                "match_id": draft_id,
+                "evidence_fingerprint": fingerprint,
+                "evidence_type": "draft_json",
+                "message_id": str(message.id),
+                "filename": attachment.filename,
+                "uploaded_at": submitted_at,
+                "parsed_player_names": "",
+                "status": "evidence_uploaded",
+                "notes": "GodForge draft enrichment only; settlement still requires official ForgeLens result",
+            },
+        )
+        for i, game in enumerate(games, start=1):
+            await asyncio.to_thread(
+                sheets_service.append_match_log,
+                sheet_id,
+                {
+                    "draft_id": draft_id,
+                    "guild_id": str(guild_id),
+                    "game_number": game.get("game_number", i),
+                    "submitted_at": submitted_at,
+                    "blue_captain": _captain_name(data, "blue"),
+                    "red_captain": _captain_name(data, "red"),
+                    "blue_picks": _join(_team_values(game, "picks", "blue")),
+                    "red_picks": _join(_team_values(game, "picks", "red")),
+                    "blue_bans": _join(_team_values(game, "bans", "blue")),
+                    "red_bans": _join(_team_values(game, "bans", "red")),
+                    "fearless_pool": _join(data.get("fearless_pool") or game.get("fearless_pool", [])),
+                    "game_status": game.get("status", game.get("game_status", "Unknown")),
+                    "match_status": "evidence_uploaded",
+                    "evidence_fingerprints": fingerprint,
+                    "review_notes": "GodForge draft enrichment; stats and results remain ForgeLens-owned",
+                    "winner": "TBD",
+                    "series_score": "TBD",
+                },
+            )
 
     game_word = "game" if len(games) == 1 else "games"
     linked_match = link_result["linked_match_id"] or "unlinked"
@@ -151,6 +159,28 @@ def _parse_forgelens_status(embed: discord.Embed) -> dict | None:
 
 def _join(values: list) -> str:
     return ", ".join(str(v) for v in values) if values else ""
+
+
+def _captain_name(data: dict, team: str) -> str:
+    captain = data.get(f"{team}_captain")
+    if isinstance(captain, dict):
+        return str(captain.get("name", ""))
+
+    nested = ((data.get("teams") or {}).get(team) or {}).get("captain")
+    if isinstance(nested, dict):
+        return str(nested.get("name", ""))
+
+    return str(captain or "")
+
+
+def _team_values(game: dict, field: str, team: str) -> list:
+    legacy_key = f"{team}_{field}"
+    legacy_values = game.get(legacy_key)
+    if legacy_values is not None:
+        return legacy_values
+
+    nested_values = (game.get(field) or {}).get(team)
+    return nested_values if nested_values is not None else []
 
 
 async def _admin(message: discord.Message, text: str) -> None:
